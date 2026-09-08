@@ -110,6 +110,23 @@ class LegacyFastMCPTransport(FastMCPTransport):
     legacy_only = True
 
 
+class RecordingTransport(FastMCPTransport):
+    """Transport test double that records options requested by ``Client``."""
+
+    def __init__(self, mcp: FastMCP):
+        super().__init__(mcp=mcp)
+        self.requested_mode: str | None = None
+
+    def get_client_transport_options(
+        self,
+        *,
+        mode: str,
+        transport_options: TransportOptions | None,
+    ) -> TransportOptions | None:
+        self.requested_mode = mode
+        return transport_options
+
+
 class LegacyInMemoryStdioMCPServer(InMemoryStdioMCPServer):
     """In-memory config entry that behaves like a legacy-only backend."""
 
@@ -185,6 +202,14 @@ class TestConfigTransportEraNegotiation:
             )
             is options
         )
+
+    async def test_client_delegates_option_resolution_to_transport(self):
+        transport = RecordingTransport(FastMCP("recording"))
+
+        async with Client(transport, mode="legacy"):
+            pass
+
+        assert transport.requested_mode == "legacy"
 
     def test_transforming_single_server_wrapper_is_legacy_only(self):
         """A single-server config that uses tool transforms or tag filters wraps
