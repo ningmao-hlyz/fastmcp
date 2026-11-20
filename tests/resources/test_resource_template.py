@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import itertools
 import threading
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -12,6 +13,7 @@ from fastmcp import Client, Context, FastMCP
 from fastmcp.resources import ResourceContent, ResourceTemplate
 from fastmcp.resources.function_resource import FunctionResource
 from fastmcp.resources.template import (
+    _repeated_template_params,
     build_regex,
     expand_uri_template,
     forward_uri,
@@ -1357,6 +1359,52 @@ class TestMalformedURITemplates:
                 uri_template="test://{user-id}/{user_id}",
                 name="collision",
             )
+
+    @pytest.mark.parametrize(
+        "uri_template",
+        [
+            "test://{tenant}/{tenant}",
+            "test://{tenant*}/{tenant}",
+            "test://x?a={tenant}&b={tenant}",
+        ],
+        ids=["path", "wildcard", "literal_query"],
+    )
+    def test_from_function_rejects_repeated_parameter(self, uri_template):
+        """A repeat cannot be captured, so the template would never match."""
+
+        def handler(tenant: str) -> str:
+            return tenant
+
+        with pytest.raises(ValueError, match=r"repeats the parameter 'tenant'"):
+            ResourceTemplate.from_function(
+                fn=handler, uri_template=uri_template, name="repeated"
+            )
+
+    def test_from_function_allows_query_expression_sharing_a_path_name(self):
+        """`{?name}` never reaches the path pattern, so it is not a repeat."""
+
+        def handler(tenant: str, filter: str | None = None) -> str:
+            return tenant
+
+        ResourceTemplate.from_function(
+            fn=handler,
+            uri_template="test://{tenant}{?filter}",
+            name="shared_name",
+        )
+
+    def test_repeat_detection_agrees_with_the_matcher(self):
+        """The prediction must track what `build_regex` actually refuses.
+
+        The two describe the same rule in different code, so a divergence
+        either refuses a template that works or leaves a dead one registered.
+        """
+
+        segments = ["", "/", "?q=", "{a}", "{b}", "{a*}", "{?a}", "{{a}}"]
+        for left, right in itertools.product(segments, repeat=2):
+            uri_template = f"test://{left}{right}"
+            assert (build_regex(uri_template) is None) == bool(
+                _repeated_template_params(uri_template)
+            ), uri_template
 
     def test_build_regex_still_works_for_valid_templates(self):
         regex = build_regex("test://{name}/{id}")

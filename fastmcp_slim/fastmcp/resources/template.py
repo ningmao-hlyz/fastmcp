@@ -232,6 +232,28 @@ def build_regex(template: str) -> re.Pattern[str] | None:
         return None
 
 
+def _repeated_template_params(uri_template: str) -> list[str]:
+    """Return the parameters a template captures more than once.
+
+    `build_regex` keys every placeholder by `template_param_key`, so `{a}` and
+    `{a*}` collide there, and a duplicate group is what makes the regex refuse
+    the template. Query expressions (`{?a}`, `{&a}`) never reach the path
+    pattern, so they cannot collide and are skipped here.
+    """
+    names = [
+        name.removesuffix("*")
+        for name in re.findall(r"\{([^?&}][^}]*)\}", uri_template)
+    ]
+    groups = [template_param_key(name) for name in names]
+    return sorted(
+        {
+            name
+            for name, group in zip(names, groups, strict=True)
+            if groups.count(group) > 1
+        }
+    )
+
+
 def match_uri_template(
     uri: str,
     uri_template: str,
@@ -794,6 +816,21 @@ class FunctionResourceTemplate(ResourceTemplate):
                     f"Use one or the other, not both."
                 )
             seen[normalized] = raw_name
+
+        # A repeated variable compiles to a duplicate regex group, so
+        # `build_regex` refuses the template and every read misses it: the
+        # server would advertise a template it can never match. The collision
+        # check above only sees distinct spellings, so an exact repeat is
+        # caught here.
+        repeated = _repeated_template_params(uri_template)
+        if repeated:
+            label = "parameter" if len(repeated) == 1 else "parameters"
+            names = " and ".join(f"'{name}'" for name in repeated)
+            raise ValueError(
+                f"URI template repeats the {label} {names}. Each parameter "
+                "may appear once; a repeat cannot be captured, so the template "
+                "would never match a URI. Use distinct parameter names."
+            )
 
         path_params = {p.replace("-", "_") for p in raw_path_params}
         query_params = {p.replace("-", "_") for p in raw_query_params}
